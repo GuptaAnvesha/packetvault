@@ -1,0 +1,17 @@
+{
+  "description": "Ground truth for the PacketVault synthetic lab capture",
+  "seed": 7,
+  "packets": 3548,
+  "scanners": [
+    "192.168.56.101",
+    "192.168.56.102"
+  ],
+  "benign": [
+    "192.168.56.10",
+    "192.168.56.2",
+    "192.168.56.20",
+    "192.168.56.21",
+    "192.168.56.22",
+    "192.168.56.23"
+  ]
+}

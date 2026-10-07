@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "packetvault"
+version = "0.1.0"
+description = "Tamper-evident network forensics store with hash-chained, AES-256-GCM encrypted, RSA-signed PCAP evidence"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Siddhant Shivam" },
+    { name = "Rohan Mathur" },
+    { name = "Anvesha Gupta" },
+]
+dependencies = [
+    "pycryptodome>=3.19",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+pyshark = ["pyshark>=0.6"]
+pdf = ["reportlab>=4.0"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+packetvault = "packetvault.cli:main"
+
+[tool.setuptools]
+packages = ["packetvault"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
