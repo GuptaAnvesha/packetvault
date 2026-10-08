@@ -125,24 +125,32 @@ The detector scores precision 1.0, recall 1.0 and F1 1.0. With `--threshold 50` 
 
 `packetvault bench samples/lab_capture.pcap --out-dir results` runs these over 1k to 50k packet records. Numbers below are from a typical laptop (Python 3.13, PyCryptodome 3.23). Raw data is in [`docs/benchmarks/benchmarks.json`](docs/benchmarks/benchmarks.json).
 
+Each figure is the median of several samples, and each sample repeats the operation for at least 0.1 s, so timer resolution and warm-up don't distort short runs. Exact numbers depend on the CPU: this one has AES-NI and SHA hardware instructions.
+
 | AES-256 mode | Throughput (50k packets) | Integrity |
 |---|---|---|
-| CTR | ~830 MB/s | none |
-| **GCM** | ~470 MB/s | **built-in authentication tag** |
-| CBC | ~330 MB/s | none (and needs padding) |
+| CTR | ~1,040 MB/s | none |
+| **GCM** | ~640 MB/s | **built-in authentication tag** |
+| CBC | ~430 MB/s | none (and needs padding) |
 
-| Hash (chain workload) | µs / record |
-|---|---|
-| MD5 | 27.4 (broken, collisions) |
-| SHA-1 | 25.0 (broken, SHAttered 2017) |
-| **SHA-256** | **29.1**, only about 6–16 % slower, collision-resistant |
+All three modes run faster at 1k packets. That data (about 180 KB) fits in the CPU's L2 cache, which is a real effect, not a timing error.
+
+| Hash | Chain cost (µs / packet) | Bulk throughput | Status |
+|---|---|---|---|
+| MD5 | 0.73 | ~780 MB/s | broken (practical collisions) |
+| SHA-1 | 0.62 | ~2,170 MB/s | broken (SHAttered, 2017) |
+| **SHA-256** | **0.61** | ~1,830 MB/s | collision-resistant |
 
 | | Key generation | Sign | Verify |
 |---|---|---|---|
-| RSA-2048 | ~2,200 ms | 15.9 ms | **2.3 ms** |
-| ECC P-256 | ~0.1 ms | 1.3 ms | 3.8 ms |
+| RSA-2048 | ~470 ms | 3.1 ms | **0.44 ms** |
+| ECC P-256 | ~0.13 ms | 0.23 ms | 0.79 ms |
 
-These results back the design choices. GCM costs about 40 % of CTR's throughput but adds authenticated encryption, so no separate MAC is needed. SHA-256 costs almost nothing more per packet than the broken hashes. RSA verification is faster than ECDSA, which suits a design where a report is signed once and verified many times by third parties. ECC would be the better choice where key generation or signing is frequent.
+These results back the design choices:
+
+- **GCM** runs at about 60 % of CTR's throughput but adds authenticated encryption, so no separate MAC is needed.
+- **SHA-256** costs no more than the broken hashes in the hash-chain workload: about 0.6 µs per packet, slightly faster than MD5 on this CPU. There is no performance reason to use a weaker hash.
+- **RSA-2048** verifies about 1.8× faster than ECDSA P-256. That suits a report signed once and verified many times by third parties. ECC is far faster at key generation and signing, and would be the better choice where those are frequent.
 
 <p align="center">
   <img src="docs/benchmarks/bench_aes_modes.png" width="32%">

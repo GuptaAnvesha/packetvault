@@ -214,7 +214,7 @@ def cmd_bench(args) -> int:
     for mode, pts in results["aes_modes"].items():
         print(f"  AES-{mode:<4} {pts[-1]['mb_per_s']:8.1f} MB/s")
     for algo, pts in results["hashes"].items():
-        print(f"  {algo:<8} {pts[-1]['us_per_record']:8.2f} us/record")
+        print(f"  {algo:<8} {pts[-1]['us_per_record']:8.2f} us/record chained  {pts[-1]['bulk_mb_per_s']:8.0f} MB/s bulk")
     for name, ops in results["rsa_vs_ecc"]["operations"].items():
         print(f"  {name:<9} keygen {ops['keygen']*1000:8.1f} ms  sign {ops['sign']*1000:6.2f} ms  "
               f"verify {ops['verify']*1000:6.2f} ms")

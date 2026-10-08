@@ -3,14 +3,22 @@
 Measures, over increasing packet volumes drawn from a real capture:
 
 * AES-256 encryption throughput in CBC, CTR and GCM modes
-* per-record hashing time with MD5, SHA-1 and SHA-256 (the hash-chain workload)
+* MD5, SHA-1 and SHA-256 cost: hash-chaining every record (the M2 workload)
+  and raw bulk throughput, using hashlib exactly as ``chain.py`` does
 * RSA-2048 vs ECC secp256r1 (ECDSA) key generation, signing and verification
 
 and writes three plots plus a JSON file of the raw numbers.
+
+Timing method: each sample repeats the operation until at least
+``MIN_SAMPLE_SECONDS`` have elapsed and records the time per call; the
+reported figure is the median of several such samples. Very short single
+runs are dominated by timer resolution and cache warm-up, so they are never
+used on their own.
 """
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import statistics
@@ -18,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
-from Crypto.Hash import MD5, SHA1, SHA256
+from Crypto.Hash import SHA256
 from Crypto.PublicKey import ECC, RSA
 from Crypto.Random import get_random_bytes
 from Crypto.Signature import DSS, pkcs1_15
@@ -27,14 +35,22 @@ from . import vault_crypto
 from .models import PacketRecord
 
 DEFAULT_VOLUMES = (1_000, 5_000, 10_000, 25_000, 50_000)
+MIN_SAMPLE_SECONDS = 0.1
 
 
-def _median_time(fn: Callable[[], object], repeat: int) -> float:
+def _median_time(fn: Callable[[], object], repeat: int, min_seconds: float = MIN_SAMPLE_SECONDS) -> float:
+    """Median seconds per call over ``repeat`` samples of at least ``min_seconds`` each."""
+    fn()  # warm-up: first call pays for allocation and cache misses
     samples = []
     for _ in range(repeat):
-        start = time.perf_counter()
-        fn()
-        samples.append(time.perf_counter() - start)
+        calls, start = 0, time.perf_counter()
+        while True:
+            fn()
+            calls += 1
+            elapsed = time.perf_counter() - start
+            if elapsed >= min_seconds:
+                break
+        samples.append(elapsed / calls)
     return statistics.median(samples)
 
 
@@ -55,22 +71,31 @@ def bench_aes_modes(payloads_by_volume: dict[int, list[bytes]], repeat: int = 5)
     return out
 
 
-def bench_hashes(payloads_by_volume: dict[int, list[bytes]], repeat: int = 3) -> dict:
-    algos = {"MD5": MD5, "SHA-1": SHA1, "SHA-256": SHA256}
+def bench_hashes(payloads_by_volume: dict[int, list[bytes]], repeat: int = 5) -> dict:
+    """Hash-chain cost per record, plus bulk throughput over the same bytes.
+
+    Uses hashlib, the implementation ``chain.py`` really runs, so the numbers
+    describe PacketVault's own sealing cost.
+    """
+    algos = {"MD5": hashlib.md5, "SHA-1": hashlib.sha1, "SHA-256": hashlib.sha256}
     out: dict = {a: [] for a in algos}
     for volume, payloads in payloads_by_volume.items():
-        for name, mod in algos.items():
-            def chain_run(mod=mod):
-                h = b"\x00" * 32
+        data = b"".join(payloads)
+        for name, new in algos.items():
+            def chain_run(new=new):
+                h = new(b"genesis").digest()
                 for p in payloads:
-                    h = mod.new(h + p).digest()
-            secs = _median_time(chain_run, repeat)
-            out[name].append({"packets": volume, "seconds": secs, "us_per_record": secs / volume * 1e6})
+                    h = new(h + p).digest()
+            chain_secs = _median_time(chain_run, repeat)
+            bulk_secs = _median_time(lambda new=new: new(data).digest(), repeat)
+            out[name].append({"packets": volume, "seconds": chain_secs,
+                              "us_per_record": chain_secs / volume * 1e6,
+                              "bulk_mb_per_s": len(data) / bulk_secs / 1e6})
     return out
 
 
 def bench_rsa_vs_ecc(payloads_by_volume: dict[int, list[bytes]], keygen_repeat: int = 5,
-                     op_repeat: int = 30) -> dict:
+                     op_repeat: int = 7) -> dict:
     rsa_key = RSA.generate(2048)
     ecc_key = ECC.generate(curve="secp256r1")
     report_like = get_random_bytes(16 * 1024)
@@ -80,14 +105,16 @@ def bench_rsa_vs_ecc(payloads_by_volume: dict[int, list[bytes]], keygen_repeat: 
 
     ops = {
         "RSA-2048": {
-            "keygen": _median_time(lambda: RSA.generate(2048), keygen_repeat),
+            "keygen": _median_time(lambda: RSA.generate(2048), keygen_repeat, min_seconds=0),
             "sign": _median_time(lambda: pkcs1_15.new(rsa_key).sign(digest), op_repeat),
             "verify": _median_time(lambda: pkcs1_15.new(rsa_key.public_key()).verify(digest, rsa_sig), op_repeat),
             "public_key_bytes": len(rsa_key.public_key().export_key(format="DER")),
             "signature_bytes": len(rsa_sig),
         },
         "ECC P-256": {
-            "keygen": _median_time(lambda: ECC.generate(curve="secp256r1"), keygen_repeat * 4),
+            # PyCryptodome derives the public point lazily; touch pointQ so the
+            # scalar multiplication Q = d*G is included, as it is for RSA.
+            "keygen": _median_time(lambda: ECC.generate(curve="secp256r1").pointQ, keygen_repeat * 4),
             "sign": _median_time(lambda: DSS.new(ecc_key, "fips-186-3").sign(digest), op_repeat),
             "verify": _median_time(lambda: DSS.new(ecc_key.public_key(), "fips-186-3").verify(digest, ecc_sig), op_repeat),
             "public_key_bytes": len(ecc_key.public_key().export_key(format="DER")),
@@ -150,8 +177,23 @@ def _plot(results: dict, out_dir: Path) -> None:
 
     line_chart(results["aes_modes"], "mb_per_s", "throughput (MB/s)",
                "AES-256 encryption throughput by mode", "bench_aes_modes.png")
-    line_chart(results["hashes"], "seconds", "time to hash-chain all records (s)",
-               "Hash-chain cost: MD5 vs SHA-1 vs SHA-256", "bench_hashes.png")
+    hashes = results["hashes"]
+    fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.2))
+    for name, points in hashes.items():
+        left.plot([p["packets"] for p in points], [p["seconds"] * 1000 for p in points], marker="o", label=name)
+    left.set_xlabel("packets")
+    left.set_ylabel("time to hash-chain all records (ms)")
+    left.set_title("Hash-chain sealing cost")
+    left.grid(alpha=0.3)
+    left.legend()
+    names = list(hashes)
+    right.bar(names, [hashes[n][-1]["bulk_mb_per_s"] for n in names], color=["C0", "C1", "C2"])
+    right.set_ylabel("throughput (MB/s)")
+    right.set_title(f"Bulk hashing throughput ({hashes[names[0]][-1]['packets']} packets)")
+    right.grid(alpha=0.3, axis="y")
+    fig.tight_layout()
+    fig.savefig(out_dir / "bench_hashes.png", dpi=150)
+    plt.close(fig)
 
     ops = results["rsa_vs_ecc"]["operations"]
     fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.2))
