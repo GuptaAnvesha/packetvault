@@ -16,3 +16,6 @@ parsed/
 results/
 *.db
 *.enc
+
+# dashboard workspace (captures, cases, keys)
+workspace/

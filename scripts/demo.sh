@@ -11,8 +11,10 @@ pv keygen --out-dir demo/keys
 pv seal demo/lab_capture.pcap --out demo/case-001 --key demo/keys/investigator_private.pem \
    --investigator "Anvesha Gupta" --case-id CASE-001
 pv verify demo/case-001 --pubkey demo/keys/investigator_public.pem
+pv query demo/case-001 --src 192.168.56.101 --flags SYN --limit 8 \
+   --pubkey demo/keys/investigator_public.pem --show-tokens
 
-for mode in modify delete insert recompute bitflip; do
+for mode in modify delete insert recompute bitflip unindex; do
   rm -rf demo/case-tampered && cp -r demo/case-001 demo/case-tampered
   pv tamper demo/case-tampered --mode "$mode" --index 1500
   pv verify demo/case-tampered --pubkey demo/keys/investigator_public.pem || true

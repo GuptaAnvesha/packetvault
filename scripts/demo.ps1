@@ -26,7 +26,7 @@ Step "4. M1-M5: seal -> hash chain, AES-256-GCM, port-scan detection, signed rep
      "seal demo/lab_capture.pcap --out demo/case-001 --key demo/keys/investigator_private.pem --investigator `"Anvesha Gupta`" --case-id CASE-001"
 Get-Content demo/case-001/report.txt
 Step "5. M6: verify the untouched bundle" "verify demo/case-001 --pubkey demo/keys/investigator_public.pem"
-Step "6. Query the encrypted store (decrypted only in memory)" "query demo/case-001 --src 192.168.56.101 --flags SYN --limit 8"
+Step "6. Searchable encryption: query through the blind index" "query demo/case-001 --src 192.168.56.101 --flags SYN --limit 8 --pubkey demo/keys/investigator_public.pem --show-tokens"
 
 Copy-Item -Recurse demo/case-001 demo/case-tampered
 Step "7. ATTACK: insider changes the destination port of packet #1500" "tamper demo/case-tampered --mode modify --index 1500"

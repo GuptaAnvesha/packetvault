@@ -16,7 +16,9 @@ from typing import BinaryIO, Iterator
 
 from .models import PacketRecord, format_timestamp, tcp_flags_to_str
 
+LINKTYPE_NULL = 0  # BSD loopback, host byte order (Npcap loopback adapter)
 LINKTYPE_ETHERNET = 1
+LINKTYPE_LOOP = 108  # OpenBSD loopback, network byte order
 LINKTYPE_RAW = 101
 LINKTYPE_LINUX_SLL = 113
 LINKTYPE_IPV4 = 228
@@ -192,6 +194,11 @@ def _strip_link_layer(linktype: int, data: bytes, f: dict) -> tuple[int | None, 
         if addr_len == 6:
             f["src_mac"] = _mac(data[6:12])
         return struct.unpack("!H", data[14:16])[0], data[16:]
+    if linktype in (LINKTYPE_NULL, LINKTYPE_LOOP):
+        family = struct.unpack("!I" if linktype == LINKTYPE_LOOP else "<I", data[0:4])[0]
+        if linktype == LINKTYPE_NULL and family > 0xFFFF:  # written on a big-endian host
+            family = struct.unpack("!I", data[0:4])[0]
+        return (0x0800 if family == 2 else 0x86DD if family in (10, 24, 28, 30) else None), data[4:]
     if linktype in (LINKTYPE_RAW, LINKTYPE_IPV4, LINKTYPE_IPV6):
         version = data[0] >> 4
         return (0x0800 if version == 4 else 0x86DD if version == 6 else None), data

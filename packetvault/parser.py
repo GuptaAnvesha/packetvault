@@ -155,6 +155,10 @@ CREATE TABLE IF NOT EXISTS packets (
     payload_len  INTEGER NOT NULL,
     chain_hash   TEXT
 );
+CREATE TABLE IF NOT EXISTS nmac_tags (
+    position  INTEGER PRIMARY KEY,
+    tag       TEXT    NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_packets_ts      ON packets (timestamp);
 CREATE INDEX IF NOT EXISTS ix_packets_ip_pair ON packets (src_ip, dst_ip);
 """
@@ -163,7 +167,7 @@ _COLUMNS = ("idx",) + RECORD_FIELDS[1:]
 
 
 def build_database(records: Iterable[PacketRecord], chain_hashes: Sequence[str] | None = None,
-                   metadata: dict | None = None) -> bytes:
+                   metadata: dict | None = None, nmac_tags: Sequence[str | None] | None = None) -> bytes:
     """Build the evidence database entirely in memory and return its bytes.
 
     Building in memory means the plaintext store never touches disk during
@@ -178,6 +182,9 @@ def build_database(records: Iterable[PacketRecord], chain_hashes: Sequence[str] 
             rows.append(row + ((chain_hashes[i] if chain_hashes else None),))
         placeholders = ",".join("?" * (len(_COLUMNS) + 1))
         conn.executemany(f"INSERT INTO packets ({','.join(_COLUMNS)},chain_hash) VALUES ({placeholders})", rows)
+        if nmac_tags:
+            conn.executemany("INSERT INTO nmac_tags (position, tag) VALUES (?, ?)",
+                             [(pos, tag) for pos, tag in enumerate(nmac_tags, start=1) if tag is not None])
         if metadata:
             conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)",
                              sorted((k, str(v)) for k, v in metadata.items()))
@@ -204,6 +211,18 @@ def load_database(data: bytes) -> tuple[list[PacketRecord], list[str | None], di
         conn.close()
     records = [PacketRecord(*row[:-1]) for row in rows]
     return records, [row[-1] for row in rows], meta
+
+
+def load_nmac_tags(data: bytes) -> list[str | None]:
+    """Stored NMAC chain tags in position order (empty if the case has none)."""
+    conn = open_database(data)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'nmac_tags'").fetchone():
+            return []
+        rows = dict(conn.execute("SELECT position, tag FROM nmac_tags").fetchall())
+    finally:
+        conn.close()
+    return [rows.get(pos) for pos in range(1, max(rows, default=0) + 1)]
 
 
 def write_sqlite(records: Iterable[PacketRecord], db_path: str | Path, **kwargs) -> None:

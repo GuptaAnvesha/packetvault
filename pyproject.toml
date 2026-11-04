@@ -27,7 +27,10 @@ dev = ["pytest>=7"]
 packetvault = "packetvault.cli:main"
 
 [tool.setuptools]
-packages = ["packetvault"]
+packages = ["packetvault", "packetvault.webui"]
+
+[tool.setuptools.package-data]
+"packetvault.webui" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

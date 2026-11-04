@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketVault · Network Forensics Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>PacketVault</h1>
+      <p>Tamper-evident network forensics store · cryptographic chain of custody</p>
+    </div>
+  </div>
+  <div class="chips" id="tool-chips"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" class="tab active" data-tab="overview">Overview</button>
+  <button role="tab" class="tab" data-tab="acquire">Acquire (Wireshark)</button>
+  <button role="tab" class="tab" data-tab="nmap">Nmap</button>
+  <button role="tab" class="tab" data-tab="cases">Cases</button>
+  <button role="tab" class="tab" data-tab="security">Security</button>
+  <button role="tab" class="tab" data-tab="nmac">Nested MAC</button>
+</nav>
+
+<main>
+<!-- ======================================================== OVERVIEW -->
+<section class="panel active" id="tab-overview">
+  <div class="tiles" id="tiles"></div>
+  <div class="grid-2">
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Seal pipeline time per stage (latest seal)</h2><span class="muted" id="seal-meta"></span></div>
+        <div class="chart" id="seal-chart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Verification time per layer (latest verify)</h2><span class="muted" id="verify-meta"></span></div>
+        <div class="legend" id="verify-legend"></div>
+        <div class="chart" id="verify-chart"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Benchmarks (M7)</h2>
+          <div class="row-gap"><span class="muted small-text" id="bench-src"></span><button class="ghost small" id="bench-run">Re-run (1k/5k/10k)</button></div></div>
+        <h3>AES-256 throughput (MB/s) by packet volume</h3>
+        <div class="legend" id="aes-legend"></div><div class="chart" id="aes-chart"></div>
+        <h3>Hash-chain cost (µs per record) by packet volume</h3>
+        <div class="legend" id="hash-legend"></div><div class="chart" id="hash-chart"></div>
+        <h3>RSA-2048 vs ECC P-256 (ms per operation)</h3>
+        <table class="table" id="asym-table"></table>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Investigator keys</h2></div>
+        <dl class="kv" id="keys-info"></dl>
+        <div class="row-gap" style="margin-top:12px">
+          <button class="primary small" id="keygen">Generate keypair + custodian key</button>
+        </div>
+        <p class="muted small-text">Keys live in <code>workspace/keys</code> (git-ignored). The custodian key enables the Nested MAC layer.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Activity</h2></div>
+        <ol class="events" id="events"></ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== ACQUIRE -->
+<section class="panel" id="tab-acquire">
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-head"><h2>Live capture</h2><span class="muted small-text" id="live-tool"></span></div>
+      <form class="form-col" id="live-form">
+        <label>Interface <select name="interface" id="iface"><option value="">loading…</option></select></label>
+        <label>Capture filter (BPF) <input name="filter" placeholder="e.g. net 192.168.56.0/24"></label>
+        <label>Duration (s) <input name="seconds" type="number" value="60" min="2" max="3600"></label>
+        <div class="row-gap"><button class="primary" type="submit" id="live-start">Start</button><button class="ghost" type="button" id="live-stop">Stop</button></div>
+      </form>
+      <div class="muted small-text" id="live-status"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Upload capture</h2></div>
+      <form class="form-col" id="upload-form">
+        <label>.pcap / .pcapng file <input type="file" name="file" accept=".pcap,.pcapng,.cap" required></label>
+        <button class="primary" type="submit">Upload</button>
+      </form>
+      <div class="muted small-text" id="upload-status">Saved from Wireshark, tcpdump or the VirtualBox lab.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Synthetic lab capture</h2></div>
+      <form class="form-col" id="sample-form">
+        <label>Seed <input name="seed" type="number" value="7"></label>
+        <button class="primary" type="submit">Generate</button>
+      </form>
+      <p class="muted small-text">Benign traffic plus an Nmap-style <code>-sS</code> and slow <code>-sT</code> scan, with ground-truth labels.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Captures</h2><span class="muted small-text">workspace/captures</span></div>
+    <table class="table" id="cap-table"><thead><tr><th>File</th><th class="num">Size</th><th>Ground truth</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div id="preview" hidden>
+    <div class="card">
+      <div class="card-head"><h2 id="pv-title">Preview</h2>
+        <form class="row-gap" id="pv-form">
+          <label class="inline">Backend <select name="backend"><option value="builtin">built-in decoder</option><option value="pyshark">pyshark / tshark</option></select></label>
+          <label class="inline">Threshold <input name="threshold" type="number" value="15" min="1" class="w-s"></label>
+          <label class="inline">Window (s) <input name="window" type="number" value="10" min="1" step="0.5" class="w-s"></label>
+          <button class="ghost small" type="submit">Re-analyse</button>
+          <button class="ghost small" type="button" id="pv-cross">Cross-check vs tshark</button>
+        </form>
+      </div>
+      <div class="tiles tiles-5" id="pv-tiles"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head"><h2>Packets over time</h2><span class="muted small-text">60 buckets</span></div>
+        <div class="legend" id="tl-legend"></div>
+        <div class="chart" id="tl-chart"></div>
+        <h3>Protocols</h3><div class="chart" id="proto-chart"></div>
+        <h3>Top talkers (packets sent)</h3><div class="chart" id="talker-chart"></div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h2>Port-scan detection (M4)</h2></div>
+          <div id="pv-alerts"></div>
+          <h3>Hosts by probes</h3>
+          <table class="table" id="pv-hosts"><thead><tr><th>Source</th><th class="num">Probes</th><th class="num">Ports</th><th class="num">Max / window</th><th class="num">SYN:SYN-ACK</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Detection accuracy</h2></div>
+          <div id="pv-eval"></div>
+          <form class="form-row" id="labels-form">
+            <label class="grow">Scanner IPs (ground truth) <input name="scanners" placeholder="192.168.56.101, 192.168.56.102"></label>
+            <button class="ghost small" type="submit">Save labels</button>
+          </form>
+        </div>
+        <div class="card" id="cross-card" hidden>
+          <div class="card-head"><h2>Decoder cross-check (built-in vs tshark)</h2></div>
+          <div id="cross"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Packets</h2><span class="muted small-text" id="pv-count"></span></div>
+      <div class="scroll"><table class="table mono-table" id="pv-records"></table></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== NMAP -->
+<section class="panel" id="tab-nmap">
+  <div class="card">
+    <div class="card-head"><h2>Scan a lab target</h2><span class="muted small-text" id="nmap-tool"></span></div>
+    <form class="form-row" id="nmap-form">
+      <label>Target <input name="target" value="127.0.0.1" required></label>
+      <label>Ports <input name="ports" value="1-1024" required></label>
+      <label>Scan type <select name="scan_type"><option value="connect">TCP connect (-sT)</option><option value="syn">SYN (-sS, admin)</option></select></label>
+      <label>Timing <select name="timing"><option value="2">T2 polite (slow scan)</option><option value="3">T3 normal</option><option value="4" selected>T4 aggressive</option><option value="5">T5 insane</option></select></label>
+      <label class="check"><input type="checkbox" name="service_detection"> Service detection (-sV)</label>
+      <label class="check"><input type="checkbox" name="use_nmap" checked> Use nmap if installed</label>
+      <label>Capture during scan <select name="capture_interface" id="nmap-iface"><option value="">no capture</option></select></label>
+      <button class="primary" type="submit">Run scan</button>
+    </form>
+    <p class="muted small-text">Targets are limited to loopback and private lab addresses (e.g. the VirtualBox host-only network). With a capture interface selected, the scan is recorded with dumpcap and labelled with this machine's address as the scanner, ready for detection evaluation.</p>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Open ports</h2><span class="muted small-text" id="nmap-meta"></span></div>
+      <table class="table" id="nmap-table"><thead><tr><th class="num">Port</th><th>Service</th><th>Product</th><th>Reason</th></tr></thead><tbody><tr><td colspan="4" class="muted">No scan yet.</td></tr></tbody></table>
+      <pre class="cmd" id="nmap-cmd"></pre>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Result</h2></div>
+      <div id="nmap-result" class="muted">Run a scan, then analyse the capture in <b>Acquire</b> and seal it in <b>Cases</b>.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== CASES -->
+<section class="panel" id="tab-cases">
+  <div class="card passbar">
+    <label class="grow">Case passphrase <input type="password" id="passphrase" autocomplete="off" placeholder="held in this page's memory only, never stored"></label>
+    <label class="check"><input type="checkbox" id="use-custodian" checked> Use custodian key (NMAC check)</label>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Seal a capture (M1–M5)</h2></div>
+      <form class="form-grid" id="seal-form">
+        <label>Capture <select name="file" id="seal-file" required></select></label>
+        <label>Case ID <input name="case_id" placeholder="CASE-001"></label>
+        <label>Investigator <input name="investigator" value="Anvesha Gupta"></label>
+        <label>PBKDF2 iterations <input name="kdf_iterations" type="number" value="600000" min="100000" step="50000"></label>
+        <label>Scan threshold <input name="threshold" type="number" value="15" min="1"></label>
+        <label>Window (s) <input name="window" type="number" value="10" min="1" step="0.5"></label>
+        <label class="check"><input type="checkbox" name="custodian" checked> Add custodian NMAC tags</label>
+        <button class="primary" type="submit">Seal</button>
+      </form>
+      <div id="seal-result"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Cases</h2></div>
+      <div class="scroll short"><table class="table" id="case-table"><thead><tr><th>Case</th><th class="num">Records</th><th class="num">Alerts</th><th>NMAC</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div id="case-detail" hidden>
+    <div class="card">
+      <div class="card-head"><h2 id="cd-title"></h2><div class="row-gap" id="cd-files"></div></div>
+      <div class="grid-4" id="cd-summary"></div>
+    </div>
+    <div class="grid-2">
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h2>Verify (M6)</h2><button class="primary small" id="verify-btn">Verify</button></div>
+          <div id="verify-out" class="muted">Public checks run without a passphrase; enter it above for all layers.</div>
+          <div class="chart" id="chain-strip"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Simulate an attack</h2><span class="muted small-text">applied to a copy; the original is untouched</span></div>
+          <form class="form-row" id="tamper-form">
+            <label>Mode <select name="mode"><option>modify</option><option>delete</option><option>insert</option><option>recompute</option><option>bitflip</option><option>unindex</option></select></label>
+            <label>Frame # <input name="index" type="number" value="1500" min="1" class="w-m"></label>
+            <label>Field <select name="field"><option>dst_port</option><option>src_port</option><option>src_ip</option><option>dst_ip</option><option>protocol</option><option>tcp_flags</option><option>payload_len</option></select></label>
+            <label>Value <input name="value" value="4444" class="w-m"></label>
+            <button class="primary" type="submit">Tamper copy &amp; verify</button>
+          </form>
+          <div id="tamper-out"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Search the encrypted store</h2><span class="muted small-text">blind index: the store sees only HMAC tokens</span></div>
+        <form class="form-grid" id="query-form">
+          <label>Host <input name="host" placeholder="either side"></label>
+          <label>Source IP <input name="src_ip"></label>
+          <label>Destination IP <input name="dst_ip"></label>
+          <label>Port <input name="port" type="number"></label>
+          <label>Protocol <select name="protocol"><option value="">any</option><option>TCP</option><option>UDP</option><option>ICMP</option><option>ARP</option></select></label>
+          <label>TCP flags <input name="flags" placeholder="SYN or SYN,ACK"></label>
+          <label>Frames from <input name="frame_from" type="number"></label>
+          <label>to <input name="frame_to" type="number"></label>
+          <label>Method <select name="mode"><option value="index">blind index</option><option value="full">full decryption</option></select></label>
+          <button class="primary" type="submit">Search</button>
+        </form>
+        <div class="muted small-text" id="query-meta"></div>
+        <div class="scroll"><table class="table mono-table" id="query-table"></table></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== SECURITY -->
+<section class="panel" id="tab-security">
+  <div class="card">
+    <div class="card-head"><h2>Tamper-detection matrix</h2><span class="muted small-text" id="matrix-meta"></span></div>
+    <form class="form-row" id="matrix-form">
+      <label>Case <select name="case" id="matrix-case"></select></label>
+      <label>Target frame <input name="index" type="number" placeholder="middle" class="w-m"></label>
+      <button class="primary" type="submit">Run all attacks</button>
+      <p class="small-text muted grow-text">Runs 8 attacks, each on a throw-away copy of the case, and records which layer caught it. Uses the passphrase from the <b>Cases</b> tab.</p>
+    </form>
+    <div class="scroll" style="margin-top:12px"><table class="table" id="matrix"></table></div>
+    <div class="legend status-legend"><span class="st pass">PASS</span><span class="st fail">FAIL = detected</span><span class="st skip">SKIP</span></div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Security measures</h2></div>
+    <table class="table" id="measures"><thead><tr><th>Measure</th><th>Status</th><th>Details</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- ======================================================== NMAC -->
+<section class="panel" id="tab-nmac">
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>NMAC<sub>k1,k2</sub>(m) = H(k2 ‖ H(k1 ‖ m))</h2></div>
+      <p class="small-text">PacketVault's optional keyed layer. The custodian key yields two independent keys k1, k2. Every chain link gets a tag <code>T<sub>n</sub> = NMAC(n ‖ H<sub>n</sub>)</code>, stored inside the encrypted container. Analysts who only know the case passphrase cannot forge tags, so a rebuilt chain is pinpointed to the exact packet.</p>
+      <form class="form-row" id="nmac-form">
+        <label class="grow">Message m <input name="msg" value="record #1500: 192.168.56.101 -> 192.168.56.10:4444 SYN"></label>
+        <button class="primary" type="submit">Compute</button>
+      </form>
+      <div class="flow" id="nmac-flow"></div>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Why nest? Length-extension attack</h2><button class="primary small" id="lext-run">Run attack</button></div>
+        <p class="small-text">A prefix MAC H(k ‖ m) is SHA-256's internal state. Knowing (m, tag) and only the key length, an attacker computes a valid tag for m ‖ padding ‖ "&amp;role=custodian".</p>
+        <div id="lext-out" class="muted">Press "Run attack".</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Tags in a sealed case</h2><button class="ghost small" id="links-run">Show first links</button></div>
+        <p class="muted small-text">Uses the case selected in <b>Cases</b> and its passphrase.</p>
+        <div id="links-out"></div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Localisation of a chain rebuild (recompute attack)</h2></div>
+    <div id="nmac-compare" class="muted">Run the tamper matrix in <b>Security</b> on a keyed case to fill this in.</div>
+  </div>
+  <div class="card">
+    <div class="card-head"><h2>Tag cost per message (µs)</h2><button class="ghost small" id="nbench-run">Run benchmark</button></div>
+    <div class="legend" id="nbench-legend"></div>
+    <div class="chart" id="nbench-chart"><p class="muted">Press "Run benchmark" (about 1 s).</p></div>
+  </div>
+</section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<div id="tooltip" class="tooltip" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

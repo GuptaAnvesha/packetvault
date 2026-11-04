@@ -8,6 +8,8 @@ delete     remove record k
 insert     inject a forged packet after record k (reusing a stored hash)
 recompute  change record k *and* recompute every later hash (strongest insider)
 bitflip    flip one bit of the ciphertext (no passphrase needed)
+unindex    delete record k's tokens from search.idx so searches never return it
+           (a keyless storage provider hiding a packet; no passphrase needed)
 """
 
 from __future__ import annotations
@@ -16,12 +18,13 @@ import dataclasses
 import json
 from pathlib import Path
 
-from . import chain, vault_crypto
+from . import chain, search, vault_crypto
 from .bundle import CONTAINER_NAME
 from .models import PacketRecord
-from .parser import build_database, load_database
+from .parser import build_database, load_database, load_nmac_tags
 
-MODES = ("modify", "delete", "insert", "recompute", "bitflip")
+MODES = ("modify", "delete", "insert", "recompute", "bitflip", "unindex")
+KEYLESS_MODES = ("bitflip", "unindex")
 
 
 def tamper_case(case_dir: str | Path, mode: str, index: int, passphrase: str | None = None,
@@ -29,6 +32,13 @@ def tamper_case(case_dir: str | Path, mode: str, index: int, passphrase: str | N
     """Apply one attack to the bundle and return a description of what was done."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
+    if mode == "unindex":
+        index_path = Path(case_dir) / search.INDEX_NAME
+        if not index_path.exists():
+            raise ValueError("this case has no search index")
+        removed = search.drop_from_index(index_path, index)
+        return f"deleted {removed} search tokens of frame #{index} from {search.INDEX_NAME}, so searches skip it"
+
     path = Path(case_dir) / CONTAINER_NAME
     blob = path.read_bytes()
 
@@ -41,7 +51,9 @@ def tamper_case(case_dir: str | Path, mode: str, index: int, passphrase: str | N
 
     if passphrase is None:
         raise ValueError(f"mode {mode!r} needs the case passphrase (insider attack)")
-    records, hashes, meta = load_database(vault_crypto.decrypt(blob, passphrase))
+    db_plain = vault_crypto.decrypt(blob, passphrase)
+    records, hashes, meta = load_database(db_plain)
+    tags = load_nmac_tags(db_plain)  # kept as-is: the insider cannot forge them without the custodian key
     pos = index - 1
     if not 0 <= pos < len(records):
         raise ValueError(f"index {index} is out of range 1..{len(records)}")
@@ -56,16 +68,20 @@ def tamper_case(case_dir: str | Path, mode: str, index: int, passphrase: str | N
             what += " and recomputed all subsequent chain hashes"
     elif mode == "delete":
         del records[pos], hashes[pos]
+        if pos < len(tags):
+            del tags[pos]
         records = _renumber(records)
         what = f"deleted frame #{index} ({original.src_ip} -> {original.dst_ip} {original.protocol}) and renumbered later frames"
     else:  # insert
         forged = dataclasses.replace(original, src_ip="10.66.66.66", tcp_flags="SYN", payload_len=0)
         records.insert(pos + 1, forged)
         hashes.insert(pos + 1, hashes[pos])
+        if tags:
+            tags.insert(pos + 1, tags[pos])
         records = _renumber(records)
         what = f"inserted a forged packet from 10.66.66.66 after frame #{index} and renumbered later frames"
 
-    db_bytes = build_database(records, hashes, metadata=meta)
+    db_bytes = build_database(records, hashes, metadata=meta, nmac_tags=tags)
     header = vault_crypto.ContainerHeader.unpack(blob)
     path.write_bytes(vault_crypto.encrypt(db_bytes, passphrase, iterations=header.iterations, salt=header.salt))
     return what + " (container re-encrypted with the correct passphrase)"

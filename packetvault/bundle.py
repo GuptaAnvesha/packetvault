@@ -6,6 +6,7 @@ Bundle layout::
         evidence.db.enc   AES-256-GCM container holding the SQLite evidence store
         report.json       signed case report (canonical JSON)
         report.sig        detached RSA-2048 PKCS#1 v1.5 signature over report.json
+        search.idx        blind index for searchable encryption (see search.py)
         report.txt        human-readable rendering of report.json
         report.pdf        (only when ReportLab is installed)
 """
@@ -14,11 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, chain, signing, vault_crypto
+from . import __version__, chain, nmac, search, signing, vault_crypto
 from .detect import DetectionConfig, detect_port_scans
 from .parser import build_database, load_database, parse_pcap, resolve_backend
 from .report import REPORT_FORMAT, render_pdf, render_text, serialise, traffic_statistics
@@ -43,14 +45,25 @@ class SealResult:
     root_hash: str
     alerts: int
     report: dict
+    timings: dict  # stage -> milliseconds
 
 
 def seal_case(pcap_path: str | Path, case_dir: str | Path, *, passphrase: str, private_key_path: str | Path,
               investigator: str, case_id: str | None = None, key_passphrase: str | None = None,
               backend: str = "auto", kdf_iterations: int = vault_crypto.DEFAULT_ITERATIONS,
               detection: DetectionConfig = DetectionConfig(),
-              checkpoint_interval: int = chain.CHECKPOINT_INTERVAL) -> SealResult:
+              checkpoint_interval: int = chain.CHECKPOINT_INTERVAL,
+              custodian_key: bytes | None = None, searchable: bool = True) -> SealResult:
     pcap_path, case_dir = Path(pcap_path), Path(case_dir)
+    timings: dict[str, float] = {}
+    clock = time.perf_counter()
+
+    def lap(stage: str) -> None:
+        nonlocal clock
+        now = time.perf_counter()
+        timings[stage] = round((now - clock) * 1000, 2)
+        clock = now
+
     private_key = signing.load_private_key(private_key_path, key_passphrase)
     sealed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     case_id = case_id or f"PV-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
@@ -68,19 +81,32 @@ def seal_case(pcap_path: str | Path, case_dir: str | Path, *, passphrase: str, p
         "parser_backend": backend,
         "record_count": len(records),
     }
+    lap("parse")
 
-    # M2 - integrity sealing
+    # M2 - integrity sealing (+ optional keyed NMAC tags over every chain link)
     sealed = chain.seal(records, acquisition, checkpoint_interval)
+    tags = nmac.chain_tags(custodian_key, sealed.hashes) if custodian_key else None
+    lap("hash_chain")
 
     # M3 - confidentiality (plaintext DB only ever exists in memory)
-    db_bytes = build_database(records, sealed.hashes, metadata={"acquisition": json.dumps(acquisition, sort_keys=True)})
+    db_bytes = build_database(records, sealed.hashes, metadata={"acquisition": json.dumps(acquisition, sort_keys=True)},
+                              nmac_tags=tags)
     container = vault_crypto.encrypt(db_bytes, passphrase, iterations=kdf_iterations)
     case_dir.mkdir(parents=True, exist_ok=True)
     container_path = case_dir / CONTAINER_NAME
     container_path.write_bytes(container)
+    lap("encrypt")
+
+    # M3b - searchable encryption: blind index an untrusted store can query without any key
+    index_info = None
+    if searchable:
+        index_info = search.build_index(records, sealed.hashes, sealed.h0, passphrase,
+                                        case_dir / search.INDEX_NAME, iterations=kdf_iterations)
+        lap("search_index")
 
     # M4 - detection
     alerts = detect_port_scans(records, detection)
+    lap("detect")
 
     # M5 - report + signature
     report = {
@@ -109,13 +135,24 @@ def seal_case(pcap_path: str | Path, case_dir: str | Path, *, passphrase: str, p
         "signer": {"algorithm": signing.SIGNATURE_ALGORITHM,
                    "public_key_fingerprint": signing.fingerprint(private_key)},
     }
+    if index_info:
+        report["search_index"] = index_info
+    if custodian_key:
+        report["keyed_integrity"] = {
+            "algorithm": "NMAC-SHA256 over every chain link",
+            "construction": "T_n = SHA256(k2 || SHA256(k1 || 'PacketVault/v1/T' || n || H_n))",
+            "custodian_key_fingerprint": nmac.key_fingerprint(custodian_key),
+            "tag_count": len(tags),
+            "root_tag": tags[-1] if tags else None,
+        }
     report_bytes = serialise(report)
     (case_dir / REPORT_NAME).write_bytes(report_bytes)
     (case_dir / SIGNATURE_NAME).write_bytes(signing.sign(report_bytes, private_key))
     (case_dir / "report.txt").write_text(render_text(report), encoding="utf-8")
     render_pdf(report, case_dir / "report.pdf")
+    lap("report_and_sign")
 
-    return SealResult(case_dir, len(records), sealed.root, len(alerts), report)
+    return SealResult(case_dir, len(records), sealed.root, len(alerts), report, timings)
 
 
 def open_case(case_dir: str | Path, passphrase: str):

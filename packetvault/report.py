@@ -73,6 +73,18 @@ def render_text(report: dict) -> str:
         f"Cipher / KDF    : {cont['cipher']} / {cont['kdf']} x{cont['kdf_iterations']}",
         f"Container SHA256: {cont['sha256']}",
         "",
+    ]
+    idx = report.get("search_index")
+    if idx:
+        lines += [
+            "-- Searchable encryption " + "-" * 47,
+            f"Index           : {idx['file']} ({idx['size']} bytes, {idx['records']} records, {idx['tokens']} tokens)",
+            f"Scheme          : {idx['scheme']}",
+            f"Indexed fields  : {', '.join(idx['fields'])}",
+            f"Index SHA-256   : {idx['sha256']}",
+            "",
+        ]
+    lines += [
         "-- Traffic statistics " + "-" * 50,
         f"Packets / bytes : {stats.get('packets', 0)} / {stats.get('bytes', 0)}",
         f"Time span       : {stats.get('first_timestamp')} -> {stats.get('last_timestamp')}"

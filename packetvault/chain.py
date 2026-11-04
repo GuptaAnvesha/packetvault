@@ -68,6 +68,7 @@ class ChainVerdict:
     window: tuple[int, int] | None = None  # (from, to) positions, when only checkpoints localise
     recomputed_root: str | None = None
     problems: list[str] = field(default_factory=list)
+    recomputed_hashes: list[str] = field(default_factory=list, repr=False)
 
 
 def verify(records: Sequence[PacketRecord], stored_hashes: Sequence[str | None], acquisition_metadata: dict,
@@ -93,6 +94,7 @@ def verify(records: Sequence[PacketRecord], stored_hashes: Sequence[str | None],
             verdict.divergent_record_index = rec.index
             verdict.problems.append(f"frame numbering breaks at position {pos}: expected #{pos}, found #{rec.index}")
 
+    verdict.recomputed_hashes = recomputed
     verdict.recomputed_root = recomputed[-1] if recomputed else genesis_hash(acquisition_metadata).hex()
 
     if expected_count is not None and expected_count != len(records):

@@ -20,8 +20,8 @@ powershell -ExecutionPolicy Bypass -File scripts\demo.ps1
 | **2. Keygen** | private/public key paths + fingerprint | "This creates the investigator's RSA-2048 keypair. The private key signs the evidence, and anyone can verify it with the public key." |
 | **3. Parse** | "parsed 3548 packets", XML + SQLite paths | "Module 1 turns every packet into a structured record and saves it as XML for sharing and as SQLite for searching." |
 | **4. Seal** | root hash, 2 alerts, then the full report | "One command does everything. It hash-chains each packet with SHA-256, encrypts the database with AES-256-GCM using a key derived with PBKDF2, runs port-scan detection, and signs the report with RSA." Point at the **root hash** and the **two HIGH alerts** in the report. |
-| **5. Verify** | four green PASS lines | "The verifier checks the signature, the encrypted file's hash, the GCM tag and the full hash chain. Everything passes, so the evidence is intact." |
-| **6. Query** | table of SYN packets from .101 | "We can still search the evidence. It's decrypted only in memory and never written to disk as plaintext." |
+| **5. Verify** | six green PASS lines | "The verifier checks the signature, the hashes of the encrypted file and the search index, the GCM tag, the full hash chain, and that the search index agrees with the evidence. Everything passes, so the evidence is intact." |
+| **6. Query** | table of SYN packets from .101, then the tokens sent | "This is searchable encryption. The search goes through a blind index: our client turns '192.168.56.101' and 'SYN' into keyed HMAC tokens, and the store matches those without ever seeing an IP address or holding a key. Only the matching packets are decrypted." Point at the **tokens** printed at the bottom. |
 | **7. Tamper** | "ATTACK: changed dst_port of frame #1500" | "Now an insider who knows the passphrase changes one port number in packet 1500 and re-encrypts the file." |
 | **8. Verify** | FAIL + **"localised to frame #1500"** | **The key moment.** "Hashing the whole file would only say *something* changed. Our hash chain says *exactly which packet*: number 1500." |
 | **9. Tamper (recompute)** | "...and recomputed all subsequent chain hashes" | "Now a smarter attacker also rebuilds every hash after the change, so the chain looks consistent." |
@@ -85,17 +85,22 @@ Every command goes through `packetvault/cli.py`. It reads the arguments and call
 
 ### Step 5: Verify (`verify.py`, `chain.py`)
 
-`verify_case()` runs four checks in order, and each one adds a PASS, FAIL or SKIP line:
+`verify_case()` runs these checks in order, and each one adds a PASS, FAIL or SKIP line (the index checks appear for cases with a search index, the NMAC check for cases with a custodian key):
 
 1. **RSA signature**: `signing.verify()` checks `report.sig` against `report.json` using the public key. If it fails, everything else is skipped, because an unsigned report can't be trusted as a reference.
 2. **Container digest**: compares the SHA-256 of `evidence.db.enc` with the value inside the signed report. Checks 1 and 2 need only the public key.
 3. **AES-GCM tag**: `vault_crypto.decrypt()` re-derives the key from the passphrase and the stored salt. `decrypt_and_verify()` raises an error if a single bit of the header, ciphertext or tag changed.
 4. **Hash chain**: `chain.verify()` rebuilds H0 from the metadata **in the signed report** (not from the database, which an attacker could edit). It then recalculates every Hn and compares each with the stored hash. It also compares the final hash with the signed root, and the record count with the signed count.
+5. **Search index**: compares the SHA-256 of `search.idx` with the signed value. It needs only the public key, and it catches a store that deletes tokens to hide packets from search.
+6. **Index consistency**: decrypts every index record and checks it equals the container's record and chain hash, and that every token matches. The search index can't tell a different story from the evidence.
 
-### Step 6: Query (`cli.py` → `cmd_query`, `parser.open_database`)
+### Step 6: Query (`cli.py` → `cmd_query`, `search.py`)
 
-- Decrypts `evidence.db.enc`, then `open_database()` loads the bytes into an in-memory SQLite database with `deserialize()`. No temporary plaintext file is created.
-- Filters like `--src` and `--flags` become a SQL `WHERE` clause with `?` placeholders. That's parameterised SQL, so filter values can't inject SQL.
+- **Searchable encryption (blind index).** `SearchClient` derives two keys from the passphrase with PBKDF2 and HMAC. It turns each filter value into a token, `HMAC-SHA256(k_tok, field ‖ value)` cut to 128 bits, so `--src 192.168.56.101` becomes an opaque string like `c1170f87…`.
+- `IndexStore` plays the untrusted server. It holds no key and only answers "which record positions carry these tokens?" with a parameterised SQL lookup. It then returns those records' AES-256-GCM ciphertexts.
+- The client decrypts only the hits. Each ciphertext's GCM tag covers the case's H0 and the record position, so records from another case or in a different order are rejected.
+- Before searching, the index file's SHA-256 is checked against the signed report (`--pubkey` also checks the signature), so a store can't hide packets by deleting tokens.
+- **Leakage to mention if asked:** the store learns which records share a value (equality and frequency per field) and which records match a query. It never learns a value. `--full-decrypt` runs the old path, which decrypts everything in memory, for comparison.
 
 ### Step 7: Tamper (`tamper.py`)
 
