@@ -447,6 +447,8 @@ Nmap and Wireshark are optional. Without them the dashboard uses its built-in sc
 
 ## 8. How this matches the synopsis
 
+The submitted synopsis is in the repo: [`Information_Security_Lab_Mini_Project_Synopsis.docx`](Information_Security_Lab_Mini_Project_Synopsis.docx).
+
 ### Objectives
 
 | Synopsis objective | Status | Where |
